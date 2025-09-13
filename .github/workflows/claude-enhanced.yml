@@ -19,7 +19,11 @@ jobs:
       contains(github.event.comment.body || github.event.issue.body || github.event.pull_request.body || '', '/') ||
       github.event_name == 'issues' ||
       github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner || 'ubuntu-latest' }}
+    strategy:
+      matrix:
+        runner: [self-hosted, ubuntu-latest]
+      fail-fast: false
     permissions:
       contents: write
       pull-requests: write

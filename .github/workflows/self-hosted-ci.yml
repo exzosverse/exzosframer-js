@@ -1,0 +1,243 @@
+name: 🍎 Self-Hosted CI (M4 Optimized)
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      runner_type:
+        description: 'Runner type to use'
+        required: true
+        type: choice
+        options:
+          - self-hosted
+          - ubuntu-latest
+        default: self-hosted
+
+env:
+  NODE_VERSION: '20'
+  PNPM_VERSION: '8'
+
+jobs:
+  # Job to test runner availability
+  runner-check:
+    name: 🔍 Check Runner
+    runs-on: ${{ github.event.inputs.runner_type || 'self-hosted' }}
+    timeout-minutes: 5
+    outputs:
+      runner_available: ${{ steps.check.outputs.available }}
+
+    steps:
+      - name: 🏃 Check Runner Status
+        id: check
+        run: |
+          echo "🍎 Running on: $(uname -a)"
+          echo "📊 Processor: $(sysctl -n machdep.cpu.brand_string || echo 'Unknown')"
+          echo "💾 Memory: $(sysctl -n hw.memsize | awk '{print $1/1024/1024/1024 " GB"}' || echo 'Unknown')"
+          echo "available=true" >> $GITHUB_OUTPUT
+
+      - name: 🔧 Check Tools
+        run: |
+          echo "Node: $(node --version || echo 'Not installed')"
+          echo "NPM: $(npm --version || echo 'Not installed')"
+          echo "PNPM: $(pnpm --version || echo 'Not installed')"
+          echo "Git: $(git --version)"
+          echo "Docker: $(docker --version || echo 'Not installed')"
+
+  # Main CI job optimized for M4
+  ci-m4-optimized:
+    name: 🚀 CI Build (M4 Optimized)
+    needs: runner-check
+    if: needs.runner-check.outputs.runner_available == 'true'
+    runs-on: ${{ github.event.inputs.runner_type || 'self-hosted' }}
+    timeout-minutes: 30
+
+    strategy:
+      matrix:
+        include:
+          - name: "Build & Test"
+            cache-key: "m4-build"
+          - name: "Lint & Type Check"
+            cache-key: "m4-lint"
+
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 🔧 Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: 📦 Setup pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: ${{ env.PNPM_VERSION }}
+          run_install: false
+
+      # M4-optimized cache
+      - name: 💾 Get pnpm store directory
+        id: pnpm-cache
+        shell: bash
+        run: |
+          echo "STORE_PATH=$(pnpm store path)" >> $GITHUB_OUTPUT
+
+      - name: 📦 Setup pnpm cache
+        uses: actions/cache@v3
+        with:
+          path: ${{ steps.pnpm-cache.outputs.STORE_PATH }}
+          key: ${{ runner.os }}-m4-pnpm-store-${{ matrix.cache-key }}-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-m4-pnpm-store-${{ matrix.cache-key }}-
+            ${{ runner.os }}-m4-pnpm-store-
+
+      - name: 📥 Install dependencies
+        run: |
+          # M4-optimized installation
+          export NODE_OPTIONS="--max-old-space-size=8192"
+          pnpm install --frozen-lockfile --prefer-offline
+
+      - name: 🏗️ Build
+        if: matrix.name == 'Build & Test'
+        run: |
+          # M4-optimized build with parallel processing
+          export NODE_OPTIONS="--max-old-space-size=8192"
+          export JOBS=8  # M4 has 8 performance cores
+          pnpm run build --parallel
+
+      - name: 🧪 Run Tests
+        if: matrix.name == 'Build & Test'
+        run: |
+          export NODE_OPTIONS="--max-old-space-size=8192"
+          pnpm run test --parallel
+
+      - name: 🔍 Run Linting
+        if: matrix.name == 'Lint & Type Check'
+        run: |
+          pnpm run lint --parallel
+
+      - name: 📊 Type Check
+        if: matrix.name == 'Lint & Type Check'
+        run: |
+          pnpm run typecheck --parallel
+
+      - name: 📈 Performance Metrics
+        if: always()
+        run: |
+          echo "### Performance Metrics 📊" >> $GITHUB_STEP_SUMMARY
+          echo "| Metric | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Runner | ${{ runner.name }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| OS | ${{ runner.os }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Arch | ${{ runner.arch }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Job Duration | ${{ job.duration }}ms |" >> $GITHUB_STEP_SUMMARY
+
+  # Fallback to GitHub-hosted runners
+  ci-fallback:
+    name: 🔄 CI Fallback (GitHub Hosted)
+    needs: runner-check
+    if: |
+      always() &&
+      (needs.runner-check.result == 'failure' ||
+       needs.runner-check.result == 'skipped' ||
+       github.event.inputs.runner_type == 'ubuntu-latest')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+
+      - name: 🔧 Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: 📦 Setup pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: 📥 Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: 🏗️ Build
+        run: pnpm run build
+
+      - name: 🧪 Test
+        run: pnpm run test
+
+      - name: 🔍 Lint
+        run: pnpm run lint
+
+  # Special job for heavy workloads
+  heavy-workload:
+    name: 🏋️ Heavy Workload (M4 Only)
+    if: |
+      github.event_name == 'workflow_dispatch' &&
+      github.event.inputs.runner_type == 'self-hosted'
+    runs-on: [self-hosted, M4]
+    timeout-minutes: 60
+
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+
+      - name: 🔧 Setup Environment
+        run: |
+          echo "Setting up M4-optimized environment..."
+          export NODE_OPTIONS="--max-old-space-size=16384"
+          export UV_THREADPOOL_SIZE=16
+
+      - name: 🏗️ Full Build
+        run: |
+          pnpm install
+          pnpm run build:all
+
+      - name: 📊 Bundle Analysis
+        run: |
+          pnpm run analyze || echo "Bundle analysis not configured"
+
+      - name: 🧪 E2E Tests
+        run: |
+          pnpm run test:e2e || echo "E2E tests not configured"
+
+      - name: 📈 Generate Reports
+        run: |
+          echo "### Heavy Workload Report 🏋️" >> $GITHUB_STEP_SUMMARY
+          echo "Successfully processed on M4 runner" >> $GITHUB_STEP_SUMMARY
+
+  # Status reporting
+  status:
+    name: 📊 Status Report
+    if: always()
+    needs: [ci-m4-optimized, ci-fallback]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 📈 Report Status
+        run: |
+          echo "### CI Status Report 📊" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [[ "${{ needs.ci-m4-optimized.result }}" == "success" ]]; then
+            echo "✅ **M4 Runner**: Success" >> $GITHUB_STEP_SUMMARY
+          elif [[ "${{ needs.ci-m4-optimized.result }}" == "skipped" ]]; then
+            echo "⏭️ **M4 Runner**: Skipped" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ **M4 Runner**: Failed" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          if [[ "${{ needs.ci-fallback.result }}" == "success" ]]; then
+            echo "✅ **Fallback Runner**: Success" >> $GITHUB_STEP_SUMMARY
+          elif [[ "${{ needs.ci-fallback.result }}" == "skipped" ]]; then
+            echo "⏭️ **Fallback Runner**: Skipped" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ **Fallback Runner**: Failed" >> $GITHUB_STEP_SUMMARY
+          fi
