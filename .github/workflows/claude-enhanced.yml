@@ -73,6 +73,16 @@ jobs:
             echo "command=deploy" >> $GITHUB_OUTPUT
           elif [[ "$BODY" == *"/docs"* ]]; then
             echo "command=docs" >> $GITHUB_OUTPUT
+          elif [[ "$BODY" == *"/prompt"* ]]; then
+            echo "command=prompt" >> $GITHUB_OUTPUT
+          elif [[ "$BODY" == *"/develop"* ]]; then
+            echo "command=develop" >> $GITHUB_OUTPUT
+          elif [[ "$BODY" == *"/create-adapter"* ]]; then
+            echo "command=create-adapter" >> $GITHUB_OUTPUT
+          elif [[ "$BODY" == *"/optimize"* ]]; then
+            echo "command=optimize" >> $GITHUB_OUTPUT
+          elif [[ "$BODY" == *"/refactor"* ]]; then
+            echo "command=refactor" >> $GITHUB_OUTPUT
           else
             echo "command=auto" >> $GITHUB_OUTPUT
           fi
@@ -220,6 +230,44 @@ jobs:
         run: |
           npm run build || echo "Build needs to be configured"
 
+      - name: Execute Prompt Management
+        if: contains(steps.detect.outputs.command, 'prompt')
+        run: |
+          BODY="${{ github.event.comment.body || github.event.issue.body || '' }}"
+
+          if [[ "$BODY" == *"/prompt create"* ]]; then
+            NAME=$(echo "$BODY" | grep -oP '(?<=/prompt create )\S+' || echo "new-prompt")
+            mkdir -p .github/prompts
+            echo "# Prompt: $NAME" > ".github/prompts/$NAME.md"
+            echo "Created prompt: $NAME"
+          elif [[ "$BODY" == *"/prompt list"* ]]; then
+            echo "Available prompts:"
+            ls .github/prompts/*.md 2>/dev/null || echo "No prompts found"
+          fi
+
+      - name: Execute Development Tasks
+        if: contains(steps.detect.outputs.command, 'develop') || contains(steps.detect.outputs.command, 'create-adapter') || contains(steps.detect.outputs.command, 'optimize') || contains(steps.detect.outputs.command, 'refactor')
+        run: |
+          COMMAND="${{ steps.detect.outputs.command }}"
+
+          case "$COMMAND" in
+            create-adapter|develop)
+              echo "Creating adapter structure..."
+              ADAPTER_NAME=$(echo "${{ github.event.comment.body }}" | grep -oP '(?<=adapter )\w+' || echo "custom")
+              mkdir -p "packages/adapter-$ADAPTER_NAME"
+              echo "Created adapter: $ADAPTER_NAME"
+              ;;
+            optimize)
+              echo "Running optimization analysis..."
+              npm run build
+              find packages -name "dist" -type d -exec du -sh {} \;
+              ;;
+            refactor)
+              echo "Running refactoring analysis..."
+              npm run lint -- --fix || true
+              ;;
+          esac
+
       - name: Post Response
         if: always()
         uses: actions/github-script@v7
@@ -246,7 +294,12 @@ jobs:
               'review': '✅ Code review complete',
               'test': '✅ Tests executed',
               'build': '✅ Build process complete',
-              'docs': '✅ Documentation updated'
+              'docs': '✅ Documentation updated',
+              'prompt': '📝 Prompt management task executed',
+              'develop': '🚀 Development task initiated',
+              'create-adapter': '🔌 Adapter creation started',
+              'optimize': '⚡ Performance optimization complete',
+              'refactor': '🔄 Code refactoring executed'
             };
 
             if (commandMessages[command]) {

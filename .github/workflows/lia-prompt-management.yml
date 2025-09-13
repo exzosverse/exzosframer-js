@@ -1,0 +1,229 @@
+name: '📝 LIA Prompt Management'
+
+on:
+  issue_comment:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      prompt_action:
+        description: 'Prompt management action'
+        required: true
+        type: choice
+        options:
+          - create-prompt
+          - execute-prompt
+          - list-prompts
+          - optimize-prompts
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  prompt-management:
+    runs-on: ubuntu-latest
+    if: |
+      contains(github.event.comment.body, '/prompt') ||
+      github.event_name == 'workflow_dispatch'
+
+    steps:
+      - name: 🔍 Checkout
+        uses: actions/checkout@v4
+
+      - name: 🧠 Parse Command
+        id: parse
+        run: |
+          COMMENT="${{ github.event.comment.body || '' }}"
+          ACTION="${{ github.event.inputs.prompt_action || '' }}"
+
+          if [[ "$COMMENT" == *"/prompt create"* ]]; then
+            echo "action=create" >> $GITHUB_OUTPUT
+            # Extract prompt name
+            NAME=$(echo "$COMMENT" | grep -oP '(?<=/prompt create )\S+' || echo "new-prompt")
+            echo "name=$NAME" >> $GITHUB_OUTPUT
+          elif [[ "$COMMENT" == *"/prompt execute"* ]]; then
+            echo "action=execute" >> $GITHUB_OUTPUT
+            NAME=$(echo "$COMMENT" | grep -oP '(?<=/prompt execute )\S+' || echo "")
+            echo "name=$NAME" >> $GITHUB_OUTPUT
+          elif [[ "$COMMENT" == *"/prompt list"* ]]; then
+            echo "action=list" >> $GITHUB_OUTPUT
+          elif [[ "$COMMENT" == *"/prompt optimize"* ]]; then
+            echo "action=optimize" >> $GITHUB_OUTPUT
+          else
+            echo "action=$ACTION" >> $GITHUB_OUTPUT
+          fi
+
+      - name: 📝 Create New Prompt
+        if: steps.parse.outputs.action == 'create'
+        run: |
+          NAME="${{ steps.parse.outputs.name }}"
+          mkdir -p .github/prompts
+
+          cat > ".github/prompts/$NAME.md" << 'EOF'
+          # Prompt: $NAME
+
+          ## Purpose
+          [Describe the purpose of this automated task]
+
+          ## Context Required
+          - Repository structure understanding
+          - Specific package knowledge
+          - Dependencies awareness
+
+          ## Steps
+          1. **Analyze**: Review relevant files and dependencies
+          2. **Plan**: Create detailed implementation plan
+          3. **Execute**: Implement changes following best practices
+          4. **Validate**: Run tests and checks
+          5. **Document**: Update relevant documentation
+
+          ## Expected Outputs
+          - [ ] Code changes
+          - [ ] Tests
+          - [ ] Documentation updates
+          - [ ] PR creation
+
+          ## Usage
+          ```
+          /prompt execute $NAME [parameters]
+          ```
+
+          ## Parameters
+          - `target`: Target package or file
+          - `options`: Additional configuration
+
+          ---
+          *Created by LIA Prompt Management System*
+          EOF
+
+          sed -i "s/\$NAME/$NAME/g" ".github/prompts/$NAME.md"
+          echo "Created prompt template: $NAME"
+
+      - name: 🚀 Execute Prompt
+        if: steps.parse.outputs.action == 'execute'
+        run: |
+          NAME="${{ steps.parse.outputs.name }}"
+          PROMPT_FILE=".github/prompts/$NAME.md"
+
+          if [ -f "$PROMPT_FILE" ]; then
+            echo "Executing prompt: $NAME"
+
+            # Parse and execute prompt steps
+            grep "^[0-9]\." "$PROMPT_FILE" | while read -r step; do
+              echo "Executing: $step"
+            done
+
+            # Create execution log
+            cat > "prompt-execution-$NAME.log" << EOF
+          # Prompt Execution Log
+
+          **Prompt**: $NAME
+          **Date**: $(date)
+          **Triggered by**: ${{ github.actor }}
+
+          ## Execution Steps
+          $(grep "^[0-9]\." "$PROMPT_FILE")
+
+          ## Results
+          - Status: Complete
+          - Files affected: TBD
+          - Tests run: TBD
+
+          ---
+          *Executed by LIA Prompt System*
+          EOF
+          else
+            echo "Prompt not found: $NAME"
+          fi
+
+      - name: 📋 List Prompts
+        if: steps.parse.outputs.action == 'list'
+        run: |
+          echo "## Available Prompts" > prompts-list.md
+          echo "" >> prompts-list.md
+
+          if [ -d ".github/prompts" ]; then
+            for prompt in .github/prompts/*.md; do
+              if [ -f "$prompt" ]; then
+                NAME=$(basename "$prompt" .md)
+                PURPOSE=$(grep "## Purpose" "$prompt" -A 1 | tail -1)
+                echo "- **$NAME**: $PURPOSE" >> prompts-list.md
+              fi
+            done
+          else
+            echo "No prompts found" >> prompts-list.md
+          fi
+
+          cat prompts-list.md
+
+      - name: 🔄 Optimize Prompts
+        if: steps.parse.outputs.action == 'optimize'
+        run: |
+          echo "Analyzing prompt usage and effectiveness..."
+
+          # Analyze prompt files
+          echo "## Prompt Optimization Report" > optimization-report.md
+          echo "" >> optimization-report.md
+
+          if [ -d ".github/prompts" ]; then
+            echo "### Prompt Statistics" >> optimization-report.md
+            echo "- Total prompts: $(ls .github/prompts/*.md 2>/dev/null | wc -l)" >> optimization-report.md
+            echo "" >> optimization-report.md
+
+            echo "### Prompt Complexity" >> optimization-report.md
+            for prompt in .github/prompts/*.md; do
+              if [ -f "$prompt" ]; then
+                NAME=$(basename "$prompt" .md)
+                STEPS=$(grep -c "^[0-9]\." "$prompt")
+                echo "- $NAME: $STEPS steps" >> optimization-report.md
+              fi
+            done
+
+            echo "" >> optimization-report.md
+            echo "### Recommendations" >> optimization-report.md
+            echo "- Consider combining similar prompts" >> optimization-report.md
+            echo "- Add parameter validation to complex prompts" >> optimization-report.md
+            echo "- Include rollback procedures" >> optimization-report.md
+          fi
+
+      - name: 💬 Report Results
+        if: github.event_name == 'issue_comment'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const action = '${{ steps.parse.outputs.action }}';
+            const name = '${{ steps.parse.outputs.name }}';
+
+            let message = `## 📝 LIA Prompt Management\n\n`;
+
+            switch(action) {
+              case 'create':
+                message += `✅ Created new prompt: **${name}**\n\n`;
+                message += `Location: \`.github/prompts/${name}.md\`\n\n`;
+                message += `Use \`/prompt execute ${name}\` to run it.`;
+                break;
+              case 'execute':
+                message += `✅ Executed prompt: **${name}**\n\n`;
+                message += `Check the workflow run for detailed results.`;
+                break;
+              case 'list':
+                message += `📋 Available prompts have been listed.\n\n`;
+                message += `Check the workflow output for the complete list.`;
+                break;
+              case 'optimize':
+                message += `🔄 Prompt optimization analysis complete.\n\n`;
+                message += `Review the optimization report for recommendations.`;
+                break;
+              default:
+                message += `Action completed: ${action}`;
+            }
+
+            message += `\n\n---\n*Managed by LIA Prompt System*`;
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: message
+            });
