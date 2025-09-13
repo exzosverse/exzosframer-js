@@ -151,9 +151,9 @@ apps/*/dist
 apps/*/build
 apps/*/.next
 
-# Package manager locks (we use npm)
+# Package manager locks (we now use pnpm)
 yarn.lock
-pnpm-lock.yaml
+# pnpm-lock.yaml  # Now tracked since we use pnpm
 bun.lock
 
 # IDE specific

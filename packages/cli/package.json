@@ -49,8 +49,8 @@
     "tsx": "^4.7.0"
   },
   "devDependencies": {
-    "@igniter-js/eslint-config": "*",
-    "@igniter-js/typescript-config": "*",
+    "@igniter-js/eslint-config": "workspace:*",
+    "@igniter-js/typescript-config": "workspace:*",
     "@types/cross-spawn": "^6.0.6",
     "@types/ioredis": "^4.28.10",
     "@types/prompts": "^2.4.9",
