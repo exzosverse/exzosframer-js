@@ -190,7 +190,6 @@ secrets/
 # Trae AI
 .trae/
 .gemini/
-.github/
 .opencode/
 .vercel
 
