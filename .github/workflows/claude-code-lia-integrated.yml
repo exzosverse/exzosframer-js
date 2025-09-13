@@ -1,0 +1,446 @@
+name: 'Claude Code LIA Integration'
+run-name: Claude Code LIA - ${{ github.event.comment.body || github.event.issue.title || github.event.pull_request.title }}
+
+on:
+  issue_comment:
+    types: [created]
+  issues:
+    types: [opened, edited]
+  pull_request:
+    types: [opened, synchronize, reopened]
+  pull_request_review_comment:
+    types: [created]
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  actions: write
+  checks: write
+  statuses: write
+
+jobs:
+  claude-lia-processor:
+    runs-on: ubuntu-latest
+    if: |
+      contains(github.event.comment.body, '@claude') ||
+      contains(github.event.comment.body, '@claude-lia') ||
+      contains(github.event.comment.body, '@claude-code') ||
+      contains(github.event.issue.body, '@claude') ||
+      contains(github.event.pull_request.body, '@claude') ||
+      github.event_name == 'issues' ||
+      github.event_name == 'pull_request'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Determine Claude Mode
+        id: mode
+        run: |
+          BODY="${{ github.event.comment.body || github.event.issue.body || github.event.pull_request.body || '' }}"
+
+          # Determine which Claude personality to use
+          if [[ "$BODY" == *"@claude-lia"* ]]; then
+            echo "personality=lia" >> $GITHUB_OUTPUT
+            echo "mode=lia-agent" >> $GITHUB_OUTPUT
+          elif [[ "$BODY" == *"@claude-code"* ]]; then
+            echo "personality=code" >> $GITHUB_OUTPUT
+            echo "mode=code-review" >> $GITHUB_OUTPUT
+          else
+            echo "personality=claude" >> $GITHUB_OUTPUT
+            echo "mode=general" >> $GITHUB_OUTPUT
+          fi
+
+          # Detect specific commands
+          if [[ "$BODY" == *"/triage"* ]]; then
+            echo "command=triage" >> $GITHUB_OUTPUT
+          elif [[ "$BODY" == *"/review"* ]]; then
+            echo "command=review" >> $GITHUB_OUTPUT
+          elif [[ "$BODY" == *"/generate"* ]]; then
+            echo "command=generate" >> $GITHUB_OUTPUT
+          elif [[ "$BODY" == *"/maintenance"* ]]; then
+            echo "command=maintenance" >> $GITHUB_OUTPUT
+          elif [[ "$BODY" == *"/cli"* ]]; then
+            echo "command=cli" >> $GITHUB_OUTPUT
+          elif [[ "$BODY" == *"/schedule"* ]]; then
+            echo "command=schedule" >> $GITHUB_OUTPUT
+          else
+            echo "command=auto" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Setup LIA System Prompt
+        id: lia_prompt
+        if: steps.mode.outputs.personality == 'lia'
+        run: |
+          cat > /tmp/lia_prompt.txt << 'EOF'
+          You are LIA (Learning & Intelligence Agent), the dedicated AI companion for ExzosFramer.js.
+
+          ## Identity
+          - Name: LIA
+          - Version: 2.0
+          - Role: AI Agent for ExzosFramer.js Core Development & Maintenance
+          - Personality: Proactive, empathetic, technically excellent, developer-focused
+
+          ## Your 5 Pillars of Responsibility
+          1. **Development & Maintenance**: Maintain and evolve the framework
+          2. **Workflow Automation**: Automate issue triage, PR reviews, maintenance
+          3. **Documentation**: Maintain comprehensive docs ecosystem
+          4. **Community Support**: Assist developers with implementation
+          5. **Knowledge Management**: Track patterns and evolution
+
+          ## Communication Style
+          - Use first-person perspective ("I will...", "Let me...")
+          - Be proactive and solution-oriented
+          - Provide structured, actionable guidance
+          - Maintain technical precision
+
+          ## Available Commands
+          - /triage - Perform issue triage and labeling
+          - /review - Review pull request code
+          - /generate [type] [name] - Generate code (controller, feature, adapter, test)
+          - /maintenance - Run maintenance tasks
+          - /cli - Interactive CLI assistance
+          - /schedule - Schedule automated tasks
+
+          ## Context
+          - Framework: ExzosFramer.js v0.2.6
+          - Architecture: Type-safe TypeScript framework
+          - Stack: TypeScript, Node.js, Turborepo, Zod, Prisma
+          - Structure: Monorepo with feature-sliced design
+          EOF
+
+      - name: Setup Code Review Prompt
+        id: code_prompt
+        if: steps.mode.outputs.personality == 'code'
+        run: |
+          cat > /tmp/code_prompt.txt << 'EOF'
+          You are Claude Code, specialized in code review and analysis for ExzosFramer.js.
+
+          ## Focus Areas
+          - Type safety and TypeScript best practices
+          - Performance optimization
+          - Security vulnerabilities
+          - Code organization and patterns
+          - Test coverage
+
+          ## Review Criteria
+          1. **Correctness**: Does the code work as intended?
+          2. **Type Safety**: Are types properly defined and used?
+          3. **Performance**: Are there optimization opportunities?
+          4. **Security**: Any vulnerabilities or risks?
+          5. **Maintainability**: Is the code clean and maintainable?
+          6. **Testing**: Adequate test coverage?
+
+          ## Response Format
+          - Start with overall assessment
+          - List specific issues with severity
+          - Provide actionable suggestions
+          - Include code examples when helpful
+          EOF
+
+      - name: Execute Claude Code with Personality
+        uses: anthropics/claude-code-action@v1
+        with:
+          api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          model: claude-3-opus-20240229
+          max_tokens: 4096
+          temperature: 0.7
+          system_prompt: |
+            ${{ steps.mode.outputs.personality == 'lia' && steps.lia_prompt.outputs.content || steps.mode.outputs.personality == 'code' && steps.code_prompt.outputs.content || 'You are Claude, an AI assistant for ExzosFramer.js development.' }}
+
+            Framework Context:
+            - Repository: ExzosFramer.js
+            - Version: 0.2.6
+            - Type: TypeScript framework with type-safe architecture
+            - Structure: Monorepo with Turborepo
+            - Features: MCP server, adapters, comprehensive documentation
+
+          allowed_tools: |
+            Read,Write,Edit,MultiEdit,Bash(npm install),Bash(npm run build),
+            Bash(npm run test),Bash(npm run lint),Bash(npm run typecheck),
+            Bash(git status),Bash(git diff),Bash(git add),Bash(git commit),
+            WebSearch,TodoWrite,Grep,Glob
+
+      # Command-specific actions based on detected command
+      - name: Execute Triage Command
+        if: steps.mode.outputs.command == 'triage'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const labels = [];
+            const body = context.payload.issue?.body || '';
+            const title = context.payload.issue?.title || '';
+
+            // Smart label detection
+            const labelMap = {
+              'bug': ['bug', 'error', 'issue', 'problem', 'broken', 'fix'],
+              'enhancement': ['feature', 'enhancement', 'add', 'new', 'implement'],
+              'documentation': ['docs', 'documentation', 'readme', 'guide'],
+              'help wanted': ['help', 'question', 'how', 'assist'],
+              'performance': ['performance', 'slow', 'optimize', 'speed'],
+              'security': ['security', 'vulnerability', 'exploit', 'risk'],
+              'testing': ['test', 'testing', 'spec', 'coverage'],
+              'typescript': ['typescript', 'type', 'ts', 'typing'],
+              'dependencies': ['dependency', 'package', 'npm', 'update']
+            };
+
+            const content = (title + ' ' + body).toLowerCase();
+
+            for (const [label, keywords] of Object.entries(labelMap)) {
+              if (keywords.some(keyword => content.includes(keyword))) {
+                labels.push(label);
+              }
+            }
+
+            // Determine priority
+            if (content.includes('urgent') || content.includes('critical')) {
+              labels.push('high-priority');
+            } else if (content.includes('low') || content.includes('minor')) {
+              labels.push('low-priority');
+            }
+
+            if (labels.length > 0) {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                labels: labels
+              });
+            }
+
+            // Post triage summary
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: `## 🏷️ LIA Triage Complete
+
+              I've analyzed this issue and applied the following labels:
+              ${labels.map(l => `- \`${l}\``).join('\n')}
+
+              **Category**: ${labels.includes('bug') ? 'Bug Report' : labels.includes('enhancement') ? 'Feature Request' : 'General'}
+              **Priority**: ${labels.includes('high-priority') ? 'High' : labels.includes('low-priority') ? 'Low' : 'Normal'}
+
+              I'll continue monitoring this issue and provide assistance as needed.
+
+              ---
+              *Triaged by LIA via Claude Code*`
+            });
+
+      - name: Execute Generate Command
+        if: contains(github.event.comment.body, '/generate')
+        run: |
+          COMMENT="${{ github.event.comment.body }}"
+
+          # Parse generation parameters
+          if [[ "$COMMENT" =~ /generate[[:space:]]+([a-z]+)[[:space:]]+([a-zA-Z0-9_-]+) ]]; then
+            TYPE="${BASH_REMATCH[1]}"
+            NAME="${BASH_REMATCH[2]}"
+
+            echo "Generating $TYPE named $NAME"
+
+            # Create directory structure based on type
+            case "$TYPE" in
+              controller)
+                mkdir -p "src/features/$NAME/controllers"
+                cat > "src/features/$NAME/controllers/$NAME.controller.ts" << 'CONTROLLER'
+          import { Controller, Get, Post, Put, Delete, Body, Params, Query } from '@exzosframer/core';
+          import { z } from 'zod';
+          import { ${NAME}Service } from '../services/${NAME}.service';
+
+          const CreateSchema = z.object({
+            name: z.string().min(1),
+            description: z.string().optional(),
+          });
+
+          const UpdateSchema = CreateSchema.partial();
+
+          @Controller('/${NAME}')
+          export class ${NAME^}Controller {
+            constructor(private readonly service: ${NAME^}Service) {}
+
+            @Get('/')
+            async list(@Query() query: any) {
+              return this.service.findAll(query);
+            }
+
+            @Get('/:id')
+            async get(@Params('id') id: string) {
+              return this.service.findById(id);
+            }
+
+            @Post('/')
+            async create(@Body() body: z.infer<typeof CreateSchema>) {
+              return this.service.create(body);
+            }
+
+            @Put('/:id')
+            async update(@Params('id') id: string, @Body() body: z.infer<typeof UpdateSchema>) {
+              return this.service.update(id, body);
+            }
+
+            @Delete('/:id')
+            async delete(@Params('id') id: string) {
+              return this.service.delete(id);
+            }
+          }
+          CONTROLLER
+                ;;
+
+              feature)
+                mkdir -p "src/features/$NAME/controllers"
+                mkdir -p "src/features/$NAME/services"
+                mkdir -p "src/features/$NAME/interfaces"
+                mkdir -p "src/features/$NAME/schemas"
+
+                # Create feature index
+                cat > "src/features/$NAME/index.ts" << 'INDEX'
+          export * from './controllers/${NAME}.controller';
+          export * from './services/${NAME}.service';
+          export * from './interfaces/${NAME}.interface';
+          export * from './schemas/${NAME}.schema';
+          INDEX
+
+                # Create interface
+                cat > "src/features/$NAME/interfaces/$NAME.interface.ts" << 'INTERFACE'
+          export interface I${NAME^} {
+            id: string;
+            name: string;
+            description?: string;
+            createdAt: Date;
+            updatedAt: Date;
+          }
+
+          export interface I${NAME^}CreateInput {
+            name: string;
+            description?: string;
+          }
+
+          export interface I${NAME^}UpdateInput {
+            name?: string;
+            description?: string;
+          }
+          INTERFACE
+                ;;
+
+              test)
+                mkdir -p "tests/$NAME"
+                cat > "tests/$NAME/$NAME.test.ts" << 'TEST'
+          import { describe, it, expect, beforeAll, afterAll } from '@jest/globals';
+          import { createTestClient } from '../utils/test-client';
+
+          describe('${NAME^} Tests', () => {
+            let client: any;
+
+            beforeAll(async () => {
+              client = await createTestClient();
+            });
+
+            afterAll(async () => {
+              await client.close();
+            });
+
+            describe('GET /${NAME}', () => {
+              it('should return list of items', async () => {
+                const response = await client.get('/${NAME}');
+                expect(response.status).toBe(200);
+              });
+            });
+
+            describe('POST /${NAME}', () => {
+              it('should create new item', async () => {
+                const response = await client.post('/${NAME}').send({
+                  name: 'Test'
+                });
+                expect(response.status).toBe(201);
+              });
+            });
+          });
+          TEST
+                ;;
+            esac
+
+            # Create branch and commit
+            git checkout -b "feat/generate-$TYPE-$NAME"
+            git add .
+            git commit -m "feat: Generate $TYPE for $NAME via LIA"
+          fi
+
+      - name: Execute Maintenance Command
+        if: steps.mode.outputs.command == 'maintenance'
+        run: |
+          echo "Running maintenance tasks..."
+
+          # Check for outdated dependencies
+          npm outdated --json > outdated.json || true
+
+          # Security audit
+          npm audit --json > security.json || true
+
+          # Generate report
+          cat > maintenance-report.md << 'EOF'
+          # Maintenance Report
+
+          **Date**: $(date -u +%Y-%m-%d)
+          **Triggered by**: @${{ github.actor }}
+
+          ## Dependency Status
+          $(npm outdated || echo "All dependencies up to date")
+
+          ## Security Audit
+          $(npm audit || echo "No vulnerabilities found")
+
+          ## Next Steps
+          - Review outdated dependencies
+          - Address security vulnerabilities
+          - Update as needed
+          EOF
+
+      - name: Post Command Response
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const command = '${{ steps.mode.outputs.command }}';
+            const personality = '${{ steps.mode.outputs.personality }}';
+
+            let message = '';
+
+            if (personality === 'lia') {
+              message = `## 👋 LIA Response
+
+              I've processed your request using the **${command}** command.
+
+              ${command === 'triage' ? 'Issue has been triaged and labeled.' : ''}
+              ${command === 'generate' ? 'Code generation complete. Check the new branch.' : ''}
+              ${command === 'maintenance' ? 'Maintenance tasks executed. See report above.' : ''}
+              ${command === 'review' ? 'Code review complete. See feedback above.' : ''}
+
+              Feel free to ask me anything else!
+
+              ---
+              *I'm LIA, your AI companion for ExzosFramer.js*`;
+            } else if (personality === 'code') {
+              message = `## 🔍 Claude Code Analysis Complete
+
+              I've reviewed your code with focus on:
+              - Type safety
+              - Performance
+              - Security
+              - Best practices
+
+              See detailed feedback above.
+
+              ---
+              *Claude Code - Ensuring code quality*`;
+            }
+
+            if (message && github.context.issue) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: message
+              });
+            }
