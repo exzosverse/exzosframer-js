@@ -1,0 +1,784 @@
+---
+description: Provides the correct and validated pattern for creating and using procedures (middlewares) in Igniter.js.
+globs: src/features/**/*
+alwaysApply: false
+---
+# Igniter.js: Procedures (Middlewares)
+
+This guide provides the **correct and validated** pattern for creating and using procedures (middlewares) in Igniter.js.
+
+## 1. How Procedures Extend Context
+
+Procedures in Igniter.js extend the context for subsequent actions by **returning an object**. This is a critical pattern to understand.
+
+-   **DO NOT use `next(newContext)`:** Unlike frameworks like Express, you must not call a `next` function to extend context.
+-   **RETURN an object:** The object you return from the procedure's handler will be shallow-merged into the `context` that the final action receives.
+-   **Special Case: `next()` for Post-Action Processing**: The `next()` function in a procedure's handler should **only** be used if the procedure needs to capture and process the *result* of the subsequent action (e.g., for auditing, performance monitoring, or response modification). In such cases, `await next()` should be called, and the result should then be handled. Otherwise, procedures should either return an object to extend the context (e.g., `{ auth: { user } }`) or `void` (implicitly or explicit `return;`) to simply allow the request to proceed without modifying the context.
+-   **Auth Procedure Context for Optional Authentication**: When an `authProcedure` is configured with `required: false` (or if authentication fails but is not strictly required), it **MUST** explicitly return an object like `{ auth: { user: null } }` to maintain consistent context typing, indicating that no authenticated user is present.
+
+### ✅ Correct Example: `auth.procedure.ts`
+
+This example demonstrates how to verify a user and add their information to the context, now leveraging globally injected services and repositories.
+
+```typescript
+// src/features/auth/procedures/auth.procedure.ts (Example - Refactored)
+import { igniter } from "@/igniter";
+import { User } from "@prisma/client";
+import { JWT_SECRET } from "../auth.interfaces";
+import { AuthRepository } from "../repositories/auth.repository"; // Import here for instantiation within procedure
+
+// Define the type for the options that can be passed when using the procedure.
+/**
+ * @typedef {object} AuthProcedureOptions
+ * @property {boolean} [required=true] - Indicates if authentication is mandatory for the route.
+ */
+type AuthProcedureOptions = {
+  required?: boolean;
+};
+
+// Define the shape of the extended context we are adding.
+/**
+ * @typedef {object} AuthContext
+ * @property {object} features - Features context object.
+ * @property {object} features.auth - Authentication context object.
+ * @property {object} features.auth.session - User session details.
+ * @property {User | null} features.auth.session.user - The authenticated user object or null if unauthenticated.
+ * @property {AuthRepository} features.auth.repository - The auth repository for user-related database operations.
+ */
+type AuthContext = {
+  auth: {
+    session: {
+      user: User | null;
+    };
+    repository: AuthRepository;
+  };
+};
+
+/**
+   * @method handler
+   * @description
+   * Procedure responsible for authenticating the user by validating the JWT token from the request cookies.
+   * Instantiates the AuthRepository and injects it into the context at `auth.repository`.
+   * If `options.required` is true, authentication is enforced: if the session token is missing, invalid, or the user is not found, a 401 Unauthorized response is returned.
+   * If `options.required` is false, unauthenticated access is allowed and the user in context may be null.
+   *
+   * @param {AuthProcedureOptions} [options={ required: true }] - Options for the procedure. If `required` is true, authentication is mandatory.
+   * @param {object} ctx - The context object provided by Igniter.js.
+   * @param {object} ctx.request - The incoming request object.
+   * @param {object} ctx.response - The response builder object.
+   * @param {object} ctx.context - The current application context.
+   * @returns {Promise<AuthContext | Response | void>} Returns the extended context with user info and AuthRepository if authentication passes or is not required, or a 401 response if authentication fails and is required.
+   */
+export const authProcedure = igniter.procedure({
+  name: "authentication",  
+  handler: async (options: AuthProcedureOptions = { required: true }, ctx): Promise<AuthContext | Response | void> => {
+    const { request, response, context } = ctx;
+    
+    // Observation: Extract the session token from request cookies.
+    const sessionToken = request.cookies.get("sessionToken");
+
+    // Business Rule: Instantiate AuthRepository using the database client from the context.
+    const authRepository = new AuthRepository(context.services.database);
+
+    // Security Rule: If authentication is required and there is no session token, return 401 Unauthorized.
+    if (options.required && !sessionToken) {
+      throw new IgniterResponseError({
+        code: "ERR_UNAUTHORIZED",
+        message: "Authentication required. Please provide a valid session token.",
+      })
+    }
+
+    let userId: string | undefined;
+
+    // Security Rule: If a session token exists, attempt to verify it and extract the user ID.
+    if (sessionToken) {
+      const decoded = context.services.jwt.verifyToken(sessionToken) as { userId: string };
+      if (decoded) userId = decoded.userId;
+    }
+
+    // Business Rule: Attempt to find the user by ID using the AuthRepository.
+    const user = await authRepository.getUserById(userId);
+
+    // Security Rule: If authentication is required but the user is not found, return 401 Unauthorized.
+    if (options.required && !user) {
+      throw new IgniterResponseError({
+        code: "ERR_UNAUTHORIZED",
+        message: "Authenticated user not found.",
+      })
+    }
+
+    // Response: Return the extended context with user session and repository.
+    return { auth: { session: { user }, repository: authRepository } };
+  },
+});
+```
+
+## 2. Applying Procedures to Actions
+
+Procedures are applied to individual actions or entire controllers using the `use` property.
+
+-   **Action-Level:** Apply to a specific query or mutation. This is the most common and recommended approach.
+-   **Controller-Level:** Apply to all actions within a controller.
+
+### ✅ Correct Usage in a Controller
+
+```typescript
+import { igniter } from "@/igniter";
+import { z } from "zod";
+import { authProcedure } from "../../auth/procedures/auth.procedure";
+import { eventsProcedure } from "../procedures/events.procedure";
+
+export const eventsController = igniter.controller({
+  name: "events",
+  path: "/events",
+  actions: {
+    create: igniter.mutation({
+      name: "Create",
+      description: "Create new event type",
+      path: "/",
+      use: [authProcedure({ required: true }), eventsProcedure()], // Injects auth and events repository
+      body: z.object({ /* ... */ }),
+      handler: async ({ request, response, context }) => {
+        // Authentication: Retrieve the authenticated user's ID from the context.
+        const userId = context.auth.session.user!.id;
+
+        // Business Logic: Create a new event using the EventsRepository.
+        const event = await context.events.repository.create({
+          title: request.body.title,
+          description: request.body.description,
+          duration: request.body.duration,
+          userId,
+        });
+
+        // Response: Return the newly created event with a 201 status.
+        return response.created(event);
+      },
+    }),
+    list: igniter.query({
+      name: "List",
+      description: "List all user events",
+      path: "/",
+      use: [authProcedure({ required: true }), eventsProcedure()], // Injects auth and events repository
+      handler: async ({ response, context }) => {
+        // Authentication: Retrieve the authenticated user's ID from the context.
+        const userId = context.auth.session.user!.id;
+
+        // Business Logic: Retrieve all events belonging to the authenticated user.
+        const events = await context.events.repository.list(userId);
+
+        // Response: Return the list of events with a 200 status.
+        return response.success(events);
+      },
+    }),
+  },
+});
+```
+
+## 3. Advanced Procedure Examples
+
+### 3.1 Rate Limiting Procedure
+
+```typescript
+// src/features/common/procedures/rate-limit.procedure.ts
+import { igniter } from "@/igniter";
+
+/**
+ * @typedef {object} RateLimitOptions
+ * @property {number} [maxRequests=100] - Maximum requests per window
+ * @property {number} [windowMs=900000] - Time window in milliseconds (15 minutes)
+ * @property {string} [keyPrefix='global'] - Prefix for rate limit keys
+ */
+type RateLimitOptions = {
+  maxRequests?: number;
+  windowMs?: number;
+  keyPrefix?: string;
+};
+
+/**
+ * @typedef {object} RateLimitContext
+ * @property {object} rateLimit - Rate limiting context
+ * @property {boolean} rateLimit.allowed - Whether request is allowed
+ * @property {number} rateLimit.remaining - Remaining requests in window
+ * @property {number} rateLimit.resetTime - When the rate limit resets
+ */
+type RateLimitContext = {
+  rateLimit: {
+    allowed: boolean;
+    remaining: number;
+    resetTime: number;
+  };
+};
+
+/**
+ * @const rateLimitProcedure
+ * @description
+ * Procedure that implements rate limiting using Redis.
+ * Tracks request counts per IP address and enforces limits.
+ *
+ * @param {RateLimitOptions} [options={}] - Rate limiting configuration
+ * @returns {Promise<RateLimitContext | Response>} Rate limit context or 429 response
+ */
+export const rateLimitProcedure = igniter.procedure({
+  name: "rateLimitProcedure",
+  handler: async (options: RateLimitOptions = {}, ctx): Promise<RateLimitContext | Response> => {
+    const { request, response, context } = ctx;
+    const { maxRequests = 100, windowMs = 15 * 60 * 1000, keyPrefix = 'global' } = options;
+
+    // Business Rule: Extract client identifier (IP address)
+    const clientId = request.headers.get('x-forwarded-for') ||
+                    request.headers.get('x-real-ip') ||
+                    'unknown';
+
+    const key = `${keyPrefix}:${clientId}`;
+
+    // Business Rule: Check current request count in Redis
+    const current = await igniter.store.get(key);
+    const requestCount = current ? parseInt(current) : 0;
+
+    // Business Rule: Calculate remaining requests and reset time
+    const resetTime = Math.floor((Date.now() + windowMs) / 1000);
+    const remaining = Math.max(0, maxRequests - requestCount - 1);
+
+    // Security Rule: If rate limit exceeded, return 429 Too Many Requests
+    if (requestCount >= maxRequests) {
+      return response.status(429).json({
+        error: 'Too many requests',
+        retryAfter: Math.ceil(windowMs / 1000),
+        resetTime
+      });
+    }
+
+    // Business Rule: Increment request count and set expiration
+    await igniter.store.set(key, (requestCount + 1).toString(), {
+      ttl: Math.ceil(windowMs / 1000)
+    });
+
+    // Context Extension: Return rate limiting information
+    return {
+      rateLimit: {
+        allowed: true,
+        remaining,
+        resetTime
+      }
+    };
+  }
+});
+```
+
+### 3.2 Request Logging & Audit Procedure
+
+```typescript
+// src/features/common/procedures/logging.procedure.ts
+import { igniter } from "@/igniter";
+
+/**
+ * @typedef {object} LoggingOptions
+ * @property {boolean} [includeBody=false] - Whether to log request/response bodies
+ * @property {boolean} [includeHeaders=false] - Whether to log headers
+ * @property {string[]} [excludePaths=[]] - Paths to exclude from detailed logging
+ */
+type LoggingOptions = {
+  includeBody?: boolean;
+  includeHeaders?: boolean;
+  excludePaths?: string[];
+};
+
+/**
+ * @typedef {object} LoggingContext
+ * @property {object} logging - Logging context
+ * @property {string} logging.requestId - Unique request identifier
+ * @property {number} logging.startTime - Request start timestamp
+ */
+type LoggingContext = {
+  logging: {
+    requestId: string;
+    startTime: number;
+  };
+};
+
+/**
+ * @const loggingProcedure
+ * @description
+ * Procedure that logs incoming requests and outgoing responses.
+ * Uses next() to capture and log the response after action execution.
+ *
+ * @param {LoggingOptions} [options={}] - Logging configuration
+ * @returns {Promise<LoggingContext | Response>} Logging context or forwards response
+ */
+export const loggingProcedure = igniter.procedure({
+  name: "loggingProcedure",
+  handler: async (options: LoggingOptions = {}, ctx): Promise<LoggingContext | Response> => {
+    const { request, response, context, next } = ctx;
+    const { includeBody = false, includeHeaders = false, excludePaths = [] } = options;
+
+    // Business Rule: Generate unique request identifier
+    const requestId = `req_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    const startTime = Date.now();
+
+    // Business Rule: Check if path should be excluded from detailed logging
+    const shouldLogDetailed = !excludePaths.some(path => request.url?.includes(path));
+
+    // Observation: Log incoming request
+    const logData = {
+      requestId,
+      method: request.method,
+      url: request.url,
+      timestamp: new Date().toISOString(),
+      ...(includeHeaders && { headers: Object.fromEntries(request.headers.entries()) }),
+      ...(includeBody && { body: await request.clone().json().catch(() => null) })
+    };
+
+    if (shouldLogDetailed) {
+      igniter.logger.info('Incoming request', logData);
+    } else {
+      igniter.logger.info('Incoming request (minimal)', {
+        requestId,
+        method: request.method,
+        url: request.url,
+        timestamp: logData.timestamp
+      });
+    }
+
+    // Context Extension: Add logging context
+    const extendedContext = {
+      logging: {
+        requestId,
+        startTime
+      }
+    };
+
+    // Business Rule: Execute the action and capture its result
+    const result = await next();
+
+    // Observation: Log outgoing response
+    const endTime = Date.now();
+    const duration = endTime - startTime;
+
+    const responseLog = {
+      requestId,
+      duration,
+      statusCode: result?.status || 'unknown',
+      timestamp: new Date().toISOString(),
+      ...(includeBody && { response: result?.body })
+    };
+
+    igniter.logger.info('Outgoing response', responseLog);
+
+    // Business Rule: Return the original response unchanged
+    return result;
+  }
+});
+```
+
+### 3.4 Caching Procedure
+
+```typescript
+// src/features/common/procedures/cache.procedure.ts
+import { igniter } from "@/igniter";
+
+/**
+ * @typedef {object} CacheOptions
+ * @property {string} [key] - Custom cache key (auto-generated if not provided)
+ * @property {number} [ttl=300] - Time-to-live in seconds (5 minutes default)
+ * @property {boolean} [enabled=true] - Whether caching is enabled
+ * @property {string[]} [varyBy=[]] - Request properties to vary cache by
+ */
+type CacheOptions = {
+  key?: string;
+  ttl?: number;
+  enabled?: boolean;
+  varyBy?: string[];
+};
+
+/**
+ * @typedef {object} CacheContext
+ * @property {object} cache - Caching context
+ * @property {string} cache.key - Generated cache key
+ * @property {boolean} cache.hit - Whether cache was hit
+ * @property {any} cache.data - Cached data (if hit)
+ */
+type CacheContext = {
+  cache: {
+    key: string;
+    hit: boolean;
+    data?: any;
+  };
+};
+
+/**
+ * @const cacheProcedure
+ * @description
+ * Procedure that implements response caching using Redis.
+ * Checks for cached responses and caches new responses.
+ *
+ * @param {CacheOptions} [options={}] - Caching configuration
+ * @returns {Promise<CacheContext | Response>} Cache context or cached response
+ */
+export const cacheProcedure = igniter.procedure({
+  name: "cacheProcedure",
+  handler: async (options: CacheOptions = {}, ctx): Promise<CacheContext | Response> => {
+    const { request, response, context, next } = ctx;
+    const { key, ttl = 300, enabled = true, varyBy = [] } = options;
+
+    // Business Rule: Generate cache key if not provided
+    const cacheKey = key || generateCacheKey(request, varyBy);
+
+    // Business Rule: Check if caching is enabled
+    if (!enabled) {
+      return {
+        cache: {
+          key: cacheKey,
+          hit: false
+        }
+      };
+    }
+
+    // Business Rule: Try to get cached response
+    const cachedData = await igniter.store.get(`cache:${cacheKey}`);
+
+    if (cachedData) {
+      // Observation: Cache hit - return cached response
+      const parsed = JSON.parse(cachedData);
+      return response.status(parsed.status).json(parsed.body);
+    }
+
+    // Context Extension: Add cache context for the action
+    const extendedContext = {
+      cache: {
+        key: cacheKey,
+        hit: false
+      }
+    };
+
+    // Business Rule: Execute the action to get fresh response
+    const result = await next();
+
+    // Business Rule: Cache the response if it's successful
+    if (result && typeof result.status === 'number' && result.status < 400) {
+      const cacheData = {
+        status: result.status,
+        body: result.body,
+        timestamp: Date.now()
+      };
+
+      await igniter.store.set(`cache:${cacheKey}`, JSON.stringify(cacheData), {
+        ttl
+      });
+    }
+
+    // Business Rule: Return the original response
+    return result;
+  }
+});
+
+/**
+ * @function generateCacheKey
+ * @description Generates a cache key based on request properties
+ * @param {Request} request - The incoming request
+ * @param {string[]} varyBy - Properties to vary cache by
+ * @returns {string} Generated cache key
+ */
+function generateCacheKey(request: Request, varyBy: string[]): string {
+  const url = new URL(request.url!);
+  let key = `${request.method}:${url.pathname}`;
+
+  // Business Rule: Include query parameters in cache key
+  if (varyBy.includes('query')) {
+    const queryParams = Array.from(url.searchParams.entries())
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([k, v]) => `${k}=${v}`)
+      .join('&');
+    if (queryParams) key += `?${queryParams}`;
+  }
+
+  // Business Rule: Include user ID if authenticated
+  if (varyBy.includes('user')) {
+    // This would need to be implemented based on auth context
+    key += `:user_${'userId'}`;
+  }
+
+  return key;
+}
+```
+
+### 3.5 Permission/Authorization Procedure
+
+```typescript
+// src/features/common/procedures/permission.procedure.ts
+import { igniter } from "@/igniter";
+
+/**
+ * @typedef {object} PermissionOptions
+ * @property {string[]} [requiredPermissions=[]] - Required permissions
+ * @property {string[]} [requiredRoles=[]] - Required roles
+ * @property {boolean} [requireAll=true] - Whether all permissions are required
+ * @property {string} [resource] - Resource being accessed
+ * @property {string} [action] - Action being performed
+ */
+type PermissionOptions = {
+  requiredPermissions?: string[];
+  requiredRoles?: string[];
+  requireAll?: boolean;
+  resource?: string;
+  action?: string;
+};
+
+/**
+ * @typedef {object} PermissionContext
+ * @property {object} permissions - Permission context
+ * @property {string[]} permissions.granted - Granted permissions
+ * @property {boolean} permissions.hasAccess - Whether user has required access
+ * @property {string[]} permissions.missing - Missing permissions (if any)
+ */
+type PermissionContext = {
+  permissions: {
+    granted: string[];
+    hasAccess: boolean;
+    missing: string[];
+  };
+};
+
+/**
+ * @const permissionProcedure
+ * @description
+ * Procedure that checks user permissions and roles for resource access.
+ * Extends auth context with permission information.
+ *
+ * @param {PermissionOptions} [options={}] - Permission requirements
+ * @returns {Promise<PermissionContext | Response>} Permission context or 403 response
+ */
+export const permissionProcedure = igniter.procedure({
+  name: "permissionProcedure",
+  handler: async (options: PermissionOptions = {}, ctx): Promise<PermissionContext | Response> => {
+    const { request, response, context } = ctx;
+    const {
+      requiredPermissions = [],
+      requiredRoles = [],
+      requireAll = true,
+      resource,
+      action
+    } = options;
+
+    // Business Rule: Get authenticated user from context
+    const user = context.auth?.session?.user;
+    if (!user) {
+      return response.unauthorized("Authentication required for permission check");
+    }
+
+    // Business Rule: Get user permissions and roles (this would typically come from database)
+    const userPermissions = user.permissions || [];
+    const userRoles = user.roles || [];
+
+    // Business Rule: Check role-based permissions
+    const hasRequiredRoles = requiredRoles.length === 0 ||
+      requiredRoles.some(role => userRoles.includes(role));
+
+    // Business Rule: Check specific permissions
+    const grantedPermissions = requiredPermissions.filter(perm =>
+      userPermissions.includes(perm)
+    );
+
+    const hasRequiredPermissions = requireAll
+      ? grantedPermissions.length === requiredPermissions.length
+      : grantedPermissions.length > 0;
+
+    const missingPermissions = requiredPermissions.filter(perm =>
+      !userPermissions.includes(perm)
+    );
+
+    // Security Rule: Check if user has access
+    const hasAccess = hasRequiredRoles && hasRequiredPermissions;
+
+    if (!hasAccess) {
+      return response.forbidden("Insufficient permissions", {
+        required: {
+          permissions: requiredPermissions,
+          roles: requiredRoles,
+          requireAll
+        },
+        granted: {
+          permissions: grantedPermissions,
+          roles: userRoles.filter(role => requiredRoles.includes(role))
+        },
+        missing: {
+          permissions: missingPermissions,
+          roles: requiredRoles.filter(role => !userRoles.includes(role))
+        },
+        resource,
+        action
+      });
+    }
+
+    // Context Extension: Return permission information
+    return {
+      permissions: {
+        granted: grantedPermissions,
+        hasAccess: true,
+        missing: []
+      }
+    };
+  }
+});
+```
+
+## 3. Common Pitfalls
+
+### ❌ Incorrectly Extending Context or Misusing `next()`
+
+```typescript
+// ❌ WRONG - Using next() to extend context or not handling its return
+handler: async (options, ctx) => {
+  const { context, next } = ctx;
+  const newContext = { ...context, auth: { user } };
+  return next(newContext); // This will fail or lose context extension!
+  // OR (if not awaiting next() when result processing is needed)
+  next(); // Loses the opportunity to process the action's result.
+}
+```
+
+### ❌ Forgetting to Return the Context Object
+
+```typescript
+// ❌ WRONG - Modifying context directly
+handler: async (options, ctx) => {
+  const { context } = ctx;
+  context.auth = { user }; // This mutation will be lost!
+  return;
+}
+```
+
+### ❌ Wrong Handler Parameters Order
+
+```typescript
+// ❌ WRONG - Forgetting that options is ALWAYS the first parameter
+handler: async (ctx, options = {}) => { // ❌ WRONG ORDER!
+  // This will cause TypeScript errors and runtime issues
+}
+
+// ❌ WRONG - Using only one parameter when options are needed
+handler: async (ctx) => { // ❌ MISSING options parameter!
+  const { maxRequests = 100 } = {}; // This will always be undefined!
+}
+
+// ✅ CORRECT - Options first, then ctx
+handler: async (options: RateLimitOptions = {}, ctx) => {
+  const { maxRequests = 100 } = options; // ✅ Works correctly
+}
+```
+
+### ❌ Using Wrong Service Access Pattern
+
+```typescript
+// ❌ WRONG - Using context.services.store instead of igniter.store
+handler: async (options, ctx) => {
+  const { context } = ctx;
+  const current = await context.services.store.get(key); // ❌ WRONG!
+  await context.services.store.set(key, value); // ❌ WRONG!
+}
+
+// ❌ WRONG - Using context.services.logger instead of igniter.logger
+handler: async (options, ctx) => {
+  const { context } = ctx;
+  context.services.logger.info('Message'); // ❌ WRONG!
+}
+
+// ✅ CORRECT - Use igniter.store and igniter.logger directly
+handler: async (options, ctx) => {
+  const current = await igniter.store.get(key); // ✅ CORRECT!
+  await igniter.store.set(key, value); // ✅ CORRECT!
+  igniter.logger.info('Message'); // ✅ CORRECT!
+}
+```
+
+### ❌ Forgetting Async/Await with Service Calls
+
+```typescript
+// ❌ WRONG - Forgetting await with Redis operations
+handler: async (options, ctx) => {
+  const current = igniter.store.get(key); // ❌ MISSING await!
+  // current will be a Promise, not the actual data
+  const requestCount = current ? parseInt(current) : 0; // ❌ This will fail!
+}
+
+// ❌ WRONG - Mixing sync and async operations incorrectly
+handler: async (options, ctx) => {
+  const current = await igniter.store.get(key);
+  if (current) {
+    igniter.store.set(key, 'value'); // ❌ MISSING await!
+  }
+  return {}; // ❌ This returns before set operation completes!
+}
+
+// ✅ CORRECT - Proper async/await usage
+handler: async (options, ctx) => {
+  const current = await igniter.store.get(key);
+  if (current) {
+    await igniter.store.set(key, 'value'); // ✅ CORRECT!
+  }
+  return {};
+}
+```
+
+### ❌ Incorrect Context Type Definitions
+
+```typescript
+// ❌ WRONG - Missing proper typing for context extensions
+type MyContext = {
+  customData: any; // ❌ Too loose, loses type safety
+  user?: User; // ❌ Optional when it should be required
+};
+
+// ❌ WRONG - Not extending from base context properly
+handler: async (options, ctx) => {
+  return {
+    customData: 'value',
+    user: null // ❌ Type mismatch if user should be User type
+  };
+};
+
+// ✅ CORRECT - Proper typing with strict types
+type MyContext = {
+  customData: {
+    id: string;
+    name: string;
+  };
+  user: User | null; // ✅ Clear about possibility of null
+};
+
+handler: async (options, ctx): Promise<MyContext> => {
+  return {
+    customData: {
+      id: '123',
+      name: 'test'
+    },
+    user: null // ✅ Type-safe null assignment
+  };
+};
+```
+
+### ❌ Response Handling Mistakes
+
+```typescript
+// ❌ WRONG - Returning wrong response types
+handler: async (options, ctx) => {
+  const { response } = ctx;
+  return response.success('data'); // ❌ Missing await or proper handling
+};
+
+// ❌ WRONG - Not handling error responses properly
+handler: async (options, ctx) => {
+  const { response } = ctx;
+  if (error) {
+    return response.error(500, 'Server error'); // ❌ Wrong method name!
+  }
+};
+
+// ✅ CORRECT - Proper response handling
+handler: async (options, ctx) => {
+  const { response } = ctx;
+  if (error) {
+    return response.status(500).json({ error: 'Server error' }); // ✅ CORRECT!
+  }
+  return response.success({ data: 'success' }); // ✅ CORRECT!
+};
+```

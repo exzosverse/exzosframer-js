@@ -1,0 +1,71 @@
+{
+  "name": "@igniter-js/monorepo",
+  "version": "0.2.6",
+  "private": true,
+  "description": "Igniter.js - A modern, type-safe HTTP framework for TypeScript",
+  "author": "Felipe Barcelos <felipebarcelospro@gmail.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/felipebarcelospro/igniter-js.git"
+  },
+  "bugs": {
+    "url": "https://github.com/felipebarcelospro/igniter-js/issues"
+  },
+  "homepage": "https://felipebarcelospro.github.io/igniter-js",
+  "keywords": [
+    "typescript",
+    "api",
+    "framework",
+    "http",
+    "router",
+    "nextjs",
+    "express",
+    "fastify",
+    "type-safe",
+    "middleware",
+    "server",
+    "monorepo",
+    "turborepo"
+  ],
+  "workspaces": [
+    "packages/*",
+    "tooling/*"
+  ],
+  "scripts": {
+    "build": "turbo build",
+    "build:www": "turbo build --filter=@igniter-js/www",
+    "dev": "turbo dev",
+    "test": "turbo test",
+    "test:watch": "turbo test:watch",
+    "lint": "turbo lint",
+    "lint:fix": "turbo lint:fix",
+    "clean": "turbo clean",
+    "format": "prettier --write \"**/*.{ts,tsx,md,json}\"",
+    "format:check": "prettier --check \"**/*.{ts,tsx,md,json}\"",
+    "typecheck": "turbo typecheck",
+    "changeset": "changeset",
+    "version-packages": "changeset version",
+    "release": "turbo build && changeset publish",
+    "wiki:sync": "node ./scripts/sync-wiki.mjs"
+  },
+  "devDependencies": {
+    "@changesets/cli": "^2.27.9",
+    "@igniter-js/eslint-config": "*",
+    "@igniter-js/typescript-config": "*",
+    "@types/ioredis": "^4.28.10",
+    "@types/node": "^22.9.0",
+    "@types/rss": "^0.0.32",
+    "eslint": "^8.57.0",
+    "ioredis": "^5.6.1",
+    "prettier": "^3.3.3",
+    "turbo": "^2.3.0",
+    "typescript": "^5.6.3"
+  },
+  "packageManager": "npm@10.9.0",
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=9.0.0"
+  },
+  "dependencies": {}
+}
