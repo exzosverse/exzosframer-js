@@ -1,0 +1,100 @@
+{
+  "name": "Main Branch Protection",
+  "target": "branch",
+  "source_type": "Repository",
+  "source": "exzosverse/exzosframer-js",
+  "enforcement": "active",
+  "conditions": {
+    "ref_name": {
+      "include": ["refs/heads/main"],
+      "exclude": []
+    }
+  },
+  "rules": [
+    {
+      "type": "deletion",
+      "parameters": {
+        "prevent_deletions": true
+      }
+    },
+    {
+      "type": "non_fast_forward",
+      "parameters": {
+        "prevent_non_fast_forward": true
+      }
+    },
+    {
+      "type": "creation",
+      "parameters": {
+        "prevent_creations": false
+      }
+    },
+    {
+      "type": "required_linear_history",
+      "parameters": {
+        "required_linear_history": true
+      }
+    },
+    {
+      "type": "required_deployments",
+      "parameters": {
+        "required_deployment_environments": []
+      }
+    },
+    {
+      "type": "required_signatures",
+      "parameters": {
+        "require_signatures": true
+      }
+    },
+    {
+      "type": "pull_request",
+      "parameters": {
+        "required_approving_review_count": 1,
+        "dismiss_stale_reviews_on_push": true,
+        "require_code_owner_review": false,
+        "require_last_push_approval": false,
+        "required_review_thread_resolution": true
+      }
+    },
+    {
+      "type": "required_status_checks",
+      "parameters": {
+        "strict_required_status_checks_policy": true,
+        "required_status_checks": [
+          {
+            "context": "LIA-Claude Processing",
+            "integration_id": null
+          },
+          {
+            "context": "Claude Code Review",
+            "integration_id": null
+          },
+          {
+            "context": "build",
+            "integration_id": null
+          },
+          {
+            "context": "test",
+            "integration_id": null
+          },
+          {
+            "context": "lint",
+            "integration_id": null
+          },
+          {
+            "context": "typecheck",
+            "integration_id": null
+          }
+        ]
+      }
+    }
+  ],
+  "bypass_actors": [
+    {
+      "actor_id": 5,
+      "actor_type": "RepositoryRole",
+      "bypass_mode": "pull_request"
+    }
+  ]
+}

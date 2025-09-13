@@ -1,0 +1,293 @@
+name: '⚡ LIA Code Generation'
+
+on:
+  issue_comment:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      generation_type:
+        description: 'Type of code to generate'
+        required: true
+        type: choice
+        options:
+          - controller
+          - feature
+          - adapter
+          - test
+          - documentation
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  code-generation:
+    runs-on: ubuntu-latest
+    if: |
+      contains(github.event.comment.body, '/generate') ||
+      contains(github.event.comment.body, '/create') ||
+      github.event_name == 'workflow_dispatch'
+
+    steps:
+      - name: 🔍 Checkout
+        uses: actions/checkout@v4
+
+      - name: 🤖 Parse Command
+        id: parse
+        run: |
+          COMMENT="${{ github.event.comment.body }}"
+
+          # Extract generation type
+          if [[ "$COMMENT" == *"/generate controller"* ]]; then
+            echo "type=controller" >> $GITHUB_OUTPUT
+          elif [[ "$COMMENT" == *"/generate feature"* ]]; then
+            echo "type=feature" >> $GITHUB_OUTPUT
+          elif [[ "$COMMENT" == *"/generate adapter"* ]]; then
+            echo "type=adapter" >> $GITHUB_OUTPUT
+          elif [[ "$COMMENT" == *"/generate test"* ]]; then
+            echo "type=test" >> $GITHUB_OUTPUT
+          else
+            echo "type=${{ github.event.inputs.generation_type }}" >> $GITHUB_OUTPUT
+          fi
+
+          # Extract name
+          NAME=$(echo "$COMMENT" | grep -oP '(?<=/generate \w+ )\w+' || echo "example")
+          echo "name=$NAME" >> $GITHUB_OUTPUT
+
+      - name: 📦 Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: ⚡ Generate Controller
+        if: steps.parse.outputs.type == 'controller'
+        run: |
+          NAME="${{ steps.parse.outputs.name }}"
+          mkdir -p "src/features/$NAME/controllers"
+
+          cat > "src/features/$NAME/controllers/$NAME.controller.ts" << 'EOF'
+          import { Controller, Get, Post, Put, Delete, Body, Params, Query } from '@exzosframer/core';
+          import { z } from 'zod';
+
+          // Schema definitions
+          const CreateSchema = z.object({
+            name: z.string().min(1),
+            description: z.string().optional(),
+          });
+
+          const UpdateSchema = CreateSchema.partial();
+
+          const ParamsSchema = z.object({
+            id: z.string().uuid(),
+          });
+
+          @Controller('/' + '$NAME')
+          export class $NAMEController {
+            @Get('/')
+            async list(@Query() query: any) {
+              return {
+                success: true,
+                data: [],
+                pagination: {
+                  page: 1,
+                  limit: 10,
+                  total: 0,
+                },
+              };
+            }
+
+            @Get('/:id')
+            async get(@Params() params: z.infer<typeof ParamsSchema>) {
+              return {
+                success: true,
+                data: {
+                  id: params.id,
+                  name: 'Example',
+                },
+              };
+            }
+
+            @Post('/')
+            async create(@Body() body: z.infer<typeof CreateSchema>) {
+              return {
+                success: true,
+                data: {
+                  id: crypto.randomUUID(),
+                  ...body,
+                  createdAt: new Date(),
+                },
+              };
+            }
+
+            @Put('/:id')
+            async update(
+              @Params() params: z.infer<typeof ParamsSchema>,
+              @Body() body: z.infer<typeof UpdateSchema>
+            ) {
+              return {
+                success: true,
+                data: {
+                  id: params.id,
+                  ...body,
+                  updatedAt: new Date(),
+                },
+              };
+            }
+
+            @Delete('/:id')
+            async delete(@Params() params: z.infer<typeof ParamsSchema>) {
+              return {
+                success: true,
+                message: 'Resource deleted successfully',
+              };
+            }
+          }
+          EOF
+
+          sed -i "s/\$NAME/$NAME/g" "src/features/$NAME/controllers/$NAME.controller.ts"
+
+      - name: 🧩 Generate Feature
+        if: steps.parse.outputs.type == 'feature'
+        run: |
+          NAME="${{ steps.parse.outputs.name }}"
+          mkdir -p "src/features/$NAME"
+
+          # Create feature structure
+          mkdir -p "src/features/$NAME/controllers"
+          mkdir -p "src/features/$NAME/procedures"
+          mkdir -p "src/features/$NAME/interfaces"
+
+          # Create index file
+          cat > "src/features/$NAME/index.ts" << EOF
+          export * from './controllers/$NAME.controller';
+          export * from './procedures/$NAME.procedure';
+          export * from './interfaces/$NAME.interface';
+          EOF
+
+          # Create interface
+          cat > "src/features/$NAME/interfaces/$NAME.interface.ts" << EOF
+          export interface I$NAME {
+            id: string;
+            name: string;
+            description?: string;
+            createdAt: Date;
+            updatedAt: Date;
+          }
+
+          export interface I${NAME}CreateInput {
+            name: string;
+            description?: string;
+          }
+
+          export interface I${NAME}UpdateInput {
+            name?: string;
+            description?: string;
+          }
+          EOF
+
+      - name: 🧪 Generate Tests
+        if: steps.parse.outputs.type == 'test'
+        run: |
+          NAME="${{ steps.parse.outputs.name }}"
+          mkdir -p "tests/$NAME"
+
+          cat > "tests/$NAME/$NAME.test.ts" << EOF
+          import { describe, it, expect, beforeAll, afterAll } from '@jest/globals';
+          import { createTestClient } from '../utils/test-client';
+
+          describe('$NAME Tests', () => {
+            let client: any;
+
+            beforeAll(async () => {
+              client = await createTestClient();
+            });
+
+            afterAll(async () => {
+              await client.close();
+            });
+
+            describe('GET /$NAME', () => {
+              it('should return list of items', async () => {
+                const response = await client.get('/$NAME');
+                expect(response.status).toBe(200);
+                expect(response.body.success).toBe(true);
+                expect(Array.isArray(response.body.data)).toBe(true);
+              });
+            });
+
+            describe('POST /$NAME', () => {
+              it('should create new item', async () => {
+                const data = {
+                  name: 'Test Item',
+                  description: 'Test Description',
+                };
+
+                const response = await client.post('/$NAME').send(data);
+                expect(response.status).toBe(201);
+                expect(response.body.success).toBe(true);
+                expect(response.body.data.name).toBe(data.name);
+              });
+            });
+          });
+          EOF
+
+      - name: 📝 Comment on Issue
+        if: github.event_name == 'issue_comment'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const type = '${{ steps.parse.outputs.type }}';
+            const name = '${{ steps.parse.outputs.name }}';
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: `## ⚡ LIA Code Generation Complete
+
+              I've successfully generated the ${type} for **${name}**.
+
+              ### Generated Files
+              ${type === 'controller' ? `- src/features/${name}/controllers/${name}.controller.ts` : ''}
+              ${type === 'feature' ? `
+              - src/features/${name}/index.ts
+              - src/features/${name}/controllers/${name}.controller.ts
+              - src/features/${name}/interfaces/${name}.interface.ts
+              ` : ''}
+              ${type === 'test' ? `- tests/${name}/${name}.test.ts` : ''}
+
+              ### Next Steps
+              1. Review the generated code
+              2. Customize as needed
+              3. Add business logic
+              4. Write/update tests
+
+              ---
+              *Generated by LIA Code Generation System*`
+            });
+
+      - name: 🌿 Create PR
+        uses: peter-evans/create-pull-request@v5
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: 'feat: Generate ${{ steps.parse.outputs.type }} for ${{ steps.parse.outputs.name }}'
+          title: '⚡ [LIA] Generated ${{ steps.parse.outputs.type }} for ${{ steps.parse.outputs.name }}'
+          body: |
+            ## Generated Code
+
+            LIA has generated the requested ${{ steps.parse.outputs.type }} for **${{ steps.parse.outputs.name }}**.
+
+            ### Files Created
+            - See changes below
+
+            ### Checklist
+            - [ ] Review generated code
+            - [ ] Add business logic
+            - [ ] Update tests
+            - [ ] Update documentation
+
+            ---
+            *Automated by LIA Code Generation*
+          branch: lia/generate-${{ steps.parse.outputs.type }}-${{ steps.parse.outputs.name }}
+          labels: generated, ${{ steps.parse.outputs.type }}

@@ -1,0 +1,172 @@
+name: '🤖 LIA-Claude Unified Intelligence'
+
+on:
+  issues:
+    types: [opened, edited, labeled, assigned]
+  issue_comment:
+    types: [created]
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  pull_request_review_comment:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Action to perform'
+        required: true
+        type: choice
+        options:
+          - analyze-codebase
+          - generate-documentation
+          - update-dependencies
+          - security-scan
+          - performance-audit
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  actions: read
+  checks: write
+  statuses: write
+
+jobs:
+  lia-claude-process:
+    runs-on: ubuntu-latest
+    name: LIA-Claude Processing
+
+    steps:
+      - name: 🔍 Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 🧠 Setup LIA Context
+        id: context
+        run: |
+          echo "Setting up LIA context..."
+          echo "event_type=${{ github.event_name }}" >> $GITHUB_OUTPUT
+          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
+
+          # Determine action type
+          if [[ "${{ github.event_name }}" == "issues" ]]; then
+            echo "action=process-issue" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            echo "action=review-pr" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "action=${{ github.event.inputs.action }}" >> $GITHUB_OUTPUT
+          else
+            echo "action=analyze-comment" >> $GITHUB_OUTPUT
+          fi
+
+      - name: 🤖 Invoke Claude Code
+        if: contains(github.event.comment.body, '@claude') || contains(github.event.comment.body, '@lia') || github.event_name != 'issue_comment'
+        uses: anthropics/claude-code-action@v1
+        with:
+          api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          model: claude-3-opus-20240229
+          max_tokens: 4096
+          temperature: 0.7
+          system_prompt: |
+            You are LIA (Learning & Intelligence Agent), the AI companion for ExzosFramer.js.
+
+            Identity:
+            - Name: LIA
+            - Role: AI Agent for ExzosFramer.js Core Development & Maintenance
+            - Version: 2.0
+
+            Your 5 Pillars of Responsibility:
+            1. Development & Maintenance
+            2. Workflow Automation
+            3. Documentation & Developer Experience
+            4. Community Support & Education
+            5. Knowledge Management & Evolution
+
+            Communication Style:
+            - Use first-person perspective
+            - Be proactive and empathetic
+            - Provide structured, actionable solutions
+            - Maintain technical precision
+
+            Context:
+            - Framework: ExzosFramer.js v0.2.6
+            - Architecture: Type-safe TypeScript framework
+            - Stack: TypeScript, Node.js, Turborepo, Zod, Prisma
+
+          allowed_tools: |
+            Read,Write,Edit,MultiEdit,Bash(npm install),Bash(npm run build),
+            Bash(npm run test),Bash(npm run lint),Bash(npm run typecheck),
+            WebSearch,TodoWrite,Grep,Glob
+
+      - name: 📊 Process Analysis Results
+        if: success()
+        run: |
+          echo "LIA-Claude processing completed successfully"
+
+      - name: 🏷️ Apply Smart Labels
+        if: github.event_name == 'issues' || github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const labels = [];
+            const body = context.payload.issue?.body || context.payload.pull_request?.body || '';
+            const title = context.payload.issue?.title || context.payload.pull_request?.title || '';
+
+            // Smart label detection
+            if (title.toLowerCase().includes('bug') || body.toLowerCase().includes('error')) {
+              labels.push('bug');
+            }
+            if (title.toLowerCase().includes('feature') || body.toLowerCase().includes('add')) {
+              labels.push('enhancement');
+            }
+            if (body.toLowerCase().includes('help') || body.toLowerCase().includes('question')) {
+              labels.push('help wanted');
+            }
+            if (body.toLowerCase().includes('doc')) {
+              labels.push('documentation');
+            }
+            if (body.toLowerCase().includes('performance')) {
+              labels.push('performance');
+            }
+            if (body.toLowerCase().includes('security')) {
+              labels.push('security');
+            }
+            if (body.toLowerCase().includes('test')) {
+              labels.push('testing');
+            }
+
+            if (labels.length > 0) {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number || context.payload.pull_request.number,
+                labels: labels
+              });
+            }
+
+      - name: 📝 Generate Session Documentation
+        if: always()
+        run: |
+          mkdir -p docs/Sessions
+          cat > docs/Sessions/lia-session-$(date +%Y%m%d-%H%M%S).md << EOF
+          # LIA Session Report
+
+          **Date**: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+          **Event**: ${{ github.event_name }}
+          **Action**: ${{ steps.context.outputs.action }}
+
+          ## Context
+          - Repository: ${{ github.repository }}
+          - Actor: ${{ github.actor }}
+          - Ref: ${{ github.ref }}
+
+          ## Processing Results
+          - Status: ${{ job.status }}
+          - Duration: ${{ steps.context.outputs.duration }}
+
+          ## Next Steps
+          - Continue monitoring
+          - Apply learnings
+          - Update knowledge base
+          EOF
